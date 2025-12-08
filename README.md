@@ -8,16 +8,16 @@ and **best-time-of-day analysis**.
 
 ---
 
-## 🚀 Features
+##  Features
 
-### ✅ **1. Complete Data Engineering Pipeline**
+###  **1. Complete Data Engineering Pipeline**
 - Raw UCI dataset ingestion  
 - Handles missing values and invalid sensor readings (`-200`)  
 - Date & Time merging into `DateTime`  
 - Feature extraction (Hour, Day, etc.)  
 - Generated AQ categories using rule-based labelling
 
-### ✅ **2. Machine Learning Model Training**
+###  **2. Machine Learning Model Training**
 - Models tested:  
   - Logistic Regression  
   - Decision Tree  
@@ -31,7 +31,7 @@ and **best-time-of-day analysis**.
   - `classification_scaler.pkl`  
   - `classification_features.json`
 
-### ✅ **3. Streamlit Dashboard (Professional UI)**
+###  **3. Streamlit Dashboard (Professional UI)**
 - Clean professional layout (no emojis, no sidebar)
 - Dataset viewer labeled **Data**
 - Select a row → Automatically fill prediction inputs  
@@ -54,7 +54,7 @@ and **best-time-of-day analysis**.
 
 ---
 
-## 🧠 Tech Stack
+## Tech Stack
 
 ### **Programming & Frameworks**
 - Python 3.12
@@ -109,7 +109,7 @@ Clean dataset size: ~9,357 rows
 DecisionTree achieved near-perfect classification accuracy
 Visualizations help users identify safe hours of the day
 
-**🎯 Final Output**
+** Final Output**
 
 ClearSkies gives:
 Instant AQ Category Predictions
