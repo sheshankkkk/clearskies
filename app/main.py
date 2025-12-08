@@ -1,189 +1,225 @@
-# app/main.py
-
-from pathlib import Path
-import json
-
-import joblib
-import numpy as np
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import numpy as np
+import joblib
+import json
+import os
+import plotly.graph_objects as go
+import plotly.express as px
 
 
-# ---------------------------------------------------------
-# Paths & constants
-# ---------------------------------------------------------
-BASE_DIR = Path(__file__).resolve().parents[1]
+st.set_page_config(page_title="ClearSkies — Air Quality Prediction", layout="wide")
 
-DATA_PATH = BASE_DIR / "data" / "processed" / "air_quality_clean.csv"
-MODEL_PATH = BASE_DIR / "models" / "classification_model.joblib"
-SCALER_PATH = BASE_DIR / "models" / "classification_scaler.pkl"
-FEATURES_PATH = BASE_DIR / "models" / "classification_features.json"
+# ------------------------------------------------------
+# LOAD MODEL + SCALER + METADATA
+# ------------------------------------------------------
+MODEL_PATH = "models/classification_model.joblib"
+SCALER_PATH = "models/classification_scaler.pkl"
+FEATURE_META = "models/classification_features.json"
 
-PAGE_TITLE = "Air Quality Category Prediction"
+with open(FEATURE_META, "r") as f:
+    meta = json.load(f)
 
+FEATURES = meta["features"]  # 9 features
+TARGET = meta["target"]
 
-# ---------------------------------------------------------
-# Load artifacts
-# ---------------------------------------------------------
+# Load model dict
+MODEL_DICT = joblib.load(MODEL_PATH)
+clf = MODEL_DICT["model"]       # <---- FIXED: Extract actual ML model
+scaler = joblib.load(SCALER_PATH)
+
+# ------------------------------------------------------
+# LOAD DATASET
+# ------------------------------------------------------
+RAW_DATA_PATH = "data/raw/AirQualityUCI.csv"
+
 @st.cache_data
-def load_data() -> pd.DataFrame:
-    df = pd.read_csv(DATA_PATH)
+def load_data():
+    df = pd.read_csv(RAW_DATA_PATH, sep=";")
+    df = df.replace(",", ".", regex=True)
+    df = df.apply(pd.to_numeric, errors="ignore")
 
-    # Make sure DateTime exists if we want to use it for charts
-    if "DateTime" in df.columns:
-        df["DateTime"] = pd.to_datetime(df["DateTime"])
-    return df
+    df["Date"] = pd.to_datetime(df["Date"], format="%d/%m/%Y", errors="coerce")
+    df["Time"] = pd.to_datetime(df["Time"], format="%H.%M.%S", errors="coerce").dt.time
 
+    # Keep only Date, Time & model features
+    df = df[["Date", "Time"] + FEATURES]
 
-@st.cache_resource
-def load_model_artifacts():
-    model = joblib.load(MODEL_PATH)
-    scaler = joblib.load(SCALER_PATH)
+    return df.dropna()
 
-    # Handle both list and dict formats for features json
-    with open(FEATURES_PATH, "r") as f:
-        raw = json.load(f)
+df = load_data()
 
-    if isinstance(raw, dict):
-        feature_names = raw.get("features") or raw.get("feature_names") or list(raw.keys())
-    else:
-        feature_names = raw
+df_display = df.copy()
 
-    feature_names = list(feature_names)
-    return model, scaler, feature_names
+# ------------------------------------------------------
+# UI HEADER
+# ------------------------------------------------------
+st.title("ClearSkies — Air Quality Category Prediction")
+st.caption("© 2025 ClearSkies — Machine Learning Air Quality Analysis Dashboard")
 
 
-def predict_category(model, scaler, feature_names, values_dict):
-    # values_dict: {feature_name: value}
-    x = pd.DataFrame([values_dict])[feature_names]
-    x_scaled = scaler.transform(x)
-    pred = model.predict(x_scaled)[0]
-    return pred
+# ------------------------------------------------------
+# ROW CLICK → AUTO-FILL
+# ------------------------------------------------------
+st.subheader("Data (click a row to auto-fill prediction inputs)")
+
+clicked = st.dataframe(
+    df_display,
+    on_select="rerun",
+    selection_mode="single-row",
+    width="stretch"
+)
+
+selected_row = None
+
+if clicked and "selection" in clicked and clicked.selection.rows:
+    selected_row = clicked.selection.rows[0]
 
 
-# ---------------------------------------------------------
-# UI helpers
-# ---------------------------------------------------------
-def make_professional_header():
-    st.set_page_config(page_title=PAGE_TITLE, layout="wide")
-    st.title(PAGE_TITLE)
-    st.caption("© 2025 ClearSkies — Machine Learning Air Quality Analysis Dashboard")
+# ------------------------------------------------------
+# PREDICTION FORM
+# ------------------------------------------------------
+st.subheader("Predict Air Quality Category")
 
+cols = st.columns(3)
 
-# ---------------------------------------------------------
-# Main app
-# ---------------------------------------------------------
-def main():
-    make_professional_header()
+input_values = {}
 
-    df = load_data()
-    model, scaler, feature_names = load_model_artifacts()
+# Pre-fill values if row selected
+if selected_row is not None:
+    auto_vals = df_display.iloc[selected_row][FEATURES].tolist()
+else:
+    auto_vals = [0.0] * len(FEATURES)
 
-    # Columns we want to show in the table
-    display_cols = []
-
-    # Show Date/Time first if present
-    if "Date" in df.columns:
-        display_cols.append("Date")
-    if "Time" in df.columns:
-        display_cols.append("Time")
-
-    # Then numeric feature columns (only ones that actually exist in df)
-    display_cols += [c for c in feature_names if c in df.columns]
-
-    # Add an internal checkbox column for row selection
-    view_df = df[display_cols].copy()
-    view_df.insert(0, "Use_for_prediction", False)
-
-    st.subheader("Data (click a checkbox in a row to use it for prediction)")
-    edited_df = st.data_editor(
-        view_df,
-        key="data_table",
-        height=420,
-        width="stretch",
-        hide_index=True,
+# Build numeric inputs
+for i, feature in enumerate(FEATURES):
+    input_values[feature] = st.number_input(
+        feature,
+        value=float(auto_vals[i]),
+        step=1.0,
+        format="%.2f"
     )
 
-    # Determine which row (if any) is currently selected
-    selected_rows = edited_df[edited_df["Use_for_prediction"] == True]
+# ------------------------------------------------------
+# PREDICTION BUTTON
+# ------------------------------------------------------
+if st.button("Predict Air Quality Category", type="primary"):
 
-    selected_row = selected_rows.iloc[-1] if not selected_rows.empty else None
+    try:
+        X = np.array([input_values[f] for f in FEATURES]).reshape(1, -1)
 
-    # ------------------------------------------------------------------
-    # Prediction section
-    # ------------------------------------------------------------------
-    st.subheader("Predict Air Quality Category")
+        # Scale input
+        X_scaled = scaler.transform(X)
 
-    if selected_row is not None:
-        st.info(
-            f"Using row index **{int(selected_row.name)}** from the data table "
-            "to auto-fill prediction inputs."
+        # Predict with actual model
+        prediction = clf.predict(X_scaled)[0]
+
+        st.success(f"Predicted Air Quality Category: **{prediction}**")
+
+    except Exception as e:
+        st.error(f"Error while making prediction: {e}")
+
+# =========================================================
+# VISUALIZATION SECTION
+# =========================================================
+
+st.markdown("## Visualizations")
+
+# --------------------------
+# Helper function: category → color
+# --------------------------
+def category_color(cat):
+    mapping = {
+        "Good": "#2ecc71",
+        "Moderate": "#f1c40f",
+        "Unhealthy": "#e67e22",
+        "Very Unhealthy": "#e74c3c",
+        "Hazardous": "#8e44ad"
+    }
+    return mapping.get(cat, "#95a5a6")  # default gray
+
+
+# --------------------------
+# Visualization A — HOURLY TREND (selected pollutant)
+# --------------------------
+
+with st.expander("Visualization A — Hourly Trend for Selected Day", expanded=False):
+
+    # Choose a date
+    unique_dates = df["Date"].unique()
+    selected_date = st.selectbox("Select a date", unique_dates)
+
+    day_df = df[df["Date"] == selected_date].copy()
+
+    if day_df.empty:
+        st.warning("No data for this date.")
+    else:
+        fig_hour = go.Figure()
+
+        fig_hour.add_trace(go.Scatter(
+            x=day_df["Time"],
+            y=day_df["CO(GT)"],
+            mode="lines+markers",
+            line=dict(color="#3498db", width=3),
+            marker=dict(size=6),
+            name="CO(GT)"
+        ))
+
+        fig_hour.update_layout(
+            height=400,
+            template="plotly_dark",
+            xaxis_title="Time of Day",
+            yaxis_title="CO(GT)",
+            title=f"Hourly CO Levels on {selected_date}",
+            margin=dict(l=40, r=20, t=60, b=40)
         )
 
-    # Build default values for the inputs
-    defaults = {}
-    for col in feature_names:
-        if col in df.columns:
-            if selected_row is not None:
-                defaults[col] = float(selected_row[col])
-            else:
-                # Fallback: median of column
-                defaults[col] = float(df[col].median())
-        else:
-            # Safety fallback if feature not in df (should not normally happen)
-            defaults[col] = 0.0
-
-    with st.form("prediction_form"):
-        cols = st.columns(3)
-        input_values = {}
-
-        for i, feat in enumerate(feature_names):
-            col = cols[i % 3]
-            value = float(defaults.get(feat, 0.0))
-            input_values[feat] = col.number_input(
-                feat,
-                value=value,
-                format="%.2f",
-            )
-
-        submit = st.form_submit_button("Predict")
-
-    if submit:
-        category = predict_category(model, scaler, feature_names, input_values)
-        st.success(f"Predicted Air Quality Category: **{category}**")
-
-        # Show a quick summary of inputs used
-        summary_df = pd.DataFrame([input_values])
-        st.markdown("**Input summary used for this prediction**")
-        st.dataframe(summary_df, use_container_width=True)
-
-    # ------------------------------------------------------------------
-    # Optional visualizations (only when requested)
-    # ------------------------------------------------------------------
-    st.subheader("Visualize Air Quality (on demand)")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if st.button("Show pollutant trends over time"):
-            if "DateTime" in df.columns:
-                time_df = df.set_index("DateTime")
-                available = [c for c in ["CO(GT)", "NO2(GT)", "PT08.S5(O3)"] if c in time_df.columns]
-                if available:
-                    st.line_chart(time_df[available])
-                else:
-                    st.warning("Pollutant columns for the trend chart are not available in the dataset.")
-            else:
-                st.warning("DateTime column not found in data; cannot plot time series.")
-
-    with col2:
-        if st.button("Show Air Quality category distribution"):
-            if "AQ_Category" in df.columns:
-                counts = df["AQ_Category"].value_counts().sort_index()
-                st.bar_chart(counts)
-            else:
-                st.warning("Column 'AQ_Category' not found in the data.")
+        st.plotly_chart(fig_hour, use_container_width=True)
 
 
-if __name__ == "__main__":
-    main()
+# ---------------------------------------------------------
+# BEST TIME OF THE DAY (Based on Lowest CO(GT))
+# ---------------------------------------------------------
+
+st.subheader("Best Time of the Day")
+
+# Ensure time is properly formatted
+df["Time"] = df["Time"].astype(str).str[:5]  # keep HH:MM
+
+# Extract hour
+df["Hour"] = df["Time"].str.split(":").str[0].astype(int)
+
+# Compute hourly averages
+hourly_avg = df.groupby("Hour")["CO(GT)"].mean().reset_index()
+
+# Find best hour
+best_hour = hourly_avg.loc[hourly_avg["CO(GT)"].idxmin()]
+best_hour_label = f"{int(best_hour['Hour']):02d}:00"
+best_value = round(best_hour["CO(GT)"], 2)
+
+# Display result
+st.success(
+    f"✅ Best Time of the Day: **{best_hour_label}**\n"
+    f"🌿 Lowest average CO(GT): **{best_value}**"
+)
+
+# Hourly bar chart
+fig_hour = px.bar(
+    hourly_avg,
+    x="Hour",
+    y="CO(GT)",
+    template="plotly_dark",
+    labels={"Hour": "Hour of Day", "CO(GT)": "Avg CO(GT)"},
+    title="Hourly Air Quality Profile",
+)
+
+fig_hour.add_vline(
+    x=int(best_hour["Hour"]),
+    line_width=3,
+    line_color="lightgreen",
+    annotation_text="Best",
+    annotation_position="top"
+)
+
+st.plotly_chart(fig_hour, use_container_width=True)
+

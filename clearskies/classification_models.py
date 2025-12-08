@@ -1,11 +1,19 @@
-from pathlib import Path
-import joblib
-import pandas as pd
-import numpy as np
+"""
+Classification model training for ClearSkies Air Quality Project
+---------------------------------------------------------------
+Trains 5 ML models, evaluates them, and saves the best model + scaler + feature names.
+"""
 
+import os
+import json
+import joblib
+import numpy as np
+import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, classification_report
+
+# Models
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.neighbors import KNeighborsClassifier
@@ -13,105 +21,129 @@ from sklearn.naive_bayes import GaussianNB
 from sklearn.svm import SVC
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PROCESSED_DATA = PROJECT_ROOT / "data" / "processed" / "air_quality_clean.csv"
-MODEL_DIR = PROJECT_ROOT / "models"
-MODEL_DIR.mkdir(exist_ok=True)
+# --------------------------------------------------------
+# LOAD & CLEAN DATA
+# --------------------------------------------------------
+def load_clean_data():
+    df = pd.read_csv("data/processed/clean_air_quality.csv")
 
+    # Remove target & invalid columns
+    required_cols = [
+        "CO(GT)", "PT08.S1(CO)", "NMHC(GT)", "PT08.S2(NMHC)",
+        "NOx(GT)", "PT08.S3(NOx)", "NO2(GT)", "PT08.S4(NO2)",
+        "PT08.S5(O3)", "T", "RH", "AH"
+    ]
 
-def load_processed():
-    df = pd.read_csv(PROCESSED_DATA)
-
-    # Remove non-numeric columns
-    df = df.drop(columns=[c for c in ["Date", "Time", "DateTime"] if c in df.columns], errors="ignore")
-
-    return df
-
-
-def create_aqi_category(df):
-    """
-    Create a synthetic AQI value using 3 major pollutant indicators.
-    """
-    df["AQI_raw"] = (
-        df["CO(GT)"].fillna(0) +
-        df["NO2(GT)"].fillna(0) +
-        df["PT08.S5(O3)"].fillna(0)
-    )
-
-    df["AQ_Category"] = pd.cut(
-        df["AQI_raw"],
-        bins=[-1, 100, 300, 600, 1000, 5000],
-        labels=["Good", "Moderate", "Unhealthy", "Very_Unhealthy", "Hazardous"]
-    )
-
-    df = df.dropna(subset=["AQ_Category"])
-
-    return df
-
-
-def train_classification(df):
-    df = create_aqi_category(df)
-
-    # Identify usable numeric features
-    numeric_cols = df.select_dtypes(include=[float, int]).columns.tolist()
-
-    # Remove helper columns
-    numeric_cols = [c for c in numeric_cols if c not in ["AQI_raw"]]
-
-    # Keep columns with meaningful data (at least 100 non-NaN values)
-    valid_features = [c for c in numeric_cols if df[c].notna().sum() > 100]
-
-    print("\n[INFO] Using features:", valid_features)
-
-    df = df[valid_features + ["AQ_Category"]]
+    df = df[required_cols + ["AQ_Category"]]  # keep target at end
     df = df.dropna()
 
-    print("[INFO] Final shape after filtering:", df.shape)
+    return df
 
-    if df.shape[0] == 0:
-        raise ValueError("Dataset is empty after filtering. Check preprocess step.")
 
-    X = df[valid_features]
+# --------------------------------------------------------
+# TRAIN / TEST SPLIT + SCALING
+# --------------------------------------------------------
+def prepare_data(df):
+
+    feature_cols = [
+        "CO(GT)", "PT08.S1(CO)", "NMHC(GT)", "PT08.S2(NMHC)",
+        "NOx(GT)", "PT08.S3(NOx)", "NO2(GT)", "PT08.S4(NO2)",
+        "PT08.S5(O3)", "T", "RH", "AH"
+    ]
+
+    X = df[feature_cols].to_numpy()
     y = df["AQ_Category"]
 
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
+    # 80% train / 20% test
     X_train, X_test, y_train, y_test = train_test_split(
-        X_scaled, y, test_size=0.25, random_state=42
+        X, y,
+        test_size=0.20,
+        random_state=42,
+        stratify=y
     )
 
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    return X_train_scaled, X_test_scaled, y_train, y_test, scaler, feature_cols
+
+
+# --------------------------------------------------------
+# TRAIN ALL MODELS
+# --------------------------------------------------------
+def train_all_models(X_train, y_train, X_test, y_test):
     models = {
-        "LogisticRegression": LogisticRegression(max_iter=1000),
-        "DecisionTree": DecisionTreeClassifier(),
+        "Logistic Regression": LogisticRegression(max_iter=200),
+        "Decision Tree": DecisionTreeClassifier(),
         "KNN": KNeighborsClassifier(),
-        "NaiveBayes": GaussianNB(),
+        "Naive Bayes": GaussianNB(),
         "SVM": SVC()
     }
 
     results = {}
+    trained_models = {}
 
     for name, model in models.items():
         print(f"\n----- Training {name} -----")
-        model.fit(X_train, y_train)
-        preds = model.predict(X_test)
 
-        acc = accuracy_score(y_test, preds)
-        print("Accuracy:", acc)
-        print(classification_report(y_test, preds))
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+
+        acc = accuracy_score(y_test, y_pred)
+        report = classification_report(y_test, y_pred)
+
+        print(f"Accuracy: {acc}")
+        print(report)
 
         results[name] = acc
-        joblib.dump(model, MODEL_DIR / f"{name}_AQ.pkl")
+        trained_models[name] = model
 
-    joblib.dump(scaler, MODEL_DIR / "classification_scaler.pkl")
+    return results, trained_models
 
-    return results
+
+# --------------------------------------------------------
+# SAVE BEST MODEL + SCALER + FEATURES
+# --------------------------------------------------------
+def save_best_model(results, trained_models, scaler, feature_cols):
+    best_model_name = max(results, key=results.get)
+    best_model = trained_models[best_model_name]
+
+    os.makedirs("models", exist_ok=True)
+
+    print(f"\n===== BEST MODEL: {best_model_name} ({results[best_model_name]}) =====")
+
+    joblib.dump(best_model, "models/classification_model.joblib")
+    joblib.dump(scaler, "models/classification_scaler.pkl")
+
+    with open("models/classification_features.json", "w") as f:
+        json.dump(feature_cols, f)
+
+    print("\nSaved:")
+    print(" - models/classification_model.joblib")
+    print(" - models/classification_scaler.pkl")
+    print(" - models/classification_features.json")
+
+
+# --------------------------------------------------------
+# MAIN
+# --------------------------------------------------------
+def main():
+    print("\n=== Loading Clean Data ===")
+    df = load_clean_data()
+    print(f"Dataset Loaded: {df.shape}")
+
+    print("\n=== Preparing Data (80% Train, 20% Test) ===")
+    X_train, X_test, y_train, y_test, scaler, feature_cols = prepare_data(df)
+
+    print("\n=== Training Models ===")
+    results, trained_models = train_all_models(X_train, y_train, X_test, y_test)
+
+    print("\n=== Saving Best Model ===")
+    save_best_model(results, trained_models, scaler, feature_cols)
+
+    print("\n=== Training Complete ===")
 
 
 if __name__ == "__main__":
-    df = load_processed()
-    results = train_classification(df)
-
-    print("\n===== FINAL RESULTS =====")
-    for model, acc in results.items():
-        print(model, "→", acc)
+    main()

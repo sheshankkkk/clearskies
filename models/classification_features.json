@@ -1,0 +1,16 @@
+{
+  "features": [
+    "CO(GT)",
+    "PT08.S1(CO)",
+    "NMHC(GT)",
+    "PT08.S2(NMHC)",
+    "NOx(GT)",
+    "PT08.S3(NOx)",
+    "NO2(GT)",
+    "PT08.S4(NO2)",
+    "PT08.S5(O3)"
+  ],
+  "target": "AQ_Category",
+  "best_model": "DecisionTree",
+  "accuracy": 1.0
+}
